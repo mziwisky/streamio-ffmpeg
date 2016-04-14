@@ -3,7 +3,7 @@ require 'multi_json'
 
 module FFMPEG
   class Movie
-    attr_reader :path, :duration, :time, :bitrate, :rotation, :creation_time
+    attr_reader :path, :duration, :time, :bitrate, :rotation, :creation_time, :raw_metadata
     attr_reader :video_stream, :video_codec, :video_bitrate, :colorspace, :width, :height, :sar, :dar, :frame_rate
     attr_reader :audio_stream, :audio_codec, :audio_bitrate, :audio_sample_rate, :audio_channels
     attr_reader :container
@@ -16,7 +16,7 @@ module FFMPEG
       @path = path
 
       # ffmpeg will output to stderr
-      command = "#{FFMPEG.ffprobe_binary} -i #{Shellwords.escape(path)} -print_format json -show_format -show_streams -show_error"
+      command = "#{FFMPEG.ffprobe_binary} -i #{Shellwords.escape(path)} -print_format json -show_format -show_streams -show_error -show_program_version"
       std_output = ''
       std_error = ''
 
@@ -28,26 +28,26 @@ module FFMPEG
       fix_encoding(std_output)
       fix_encoding(std_error)
 
-      metadata = MultiJson.load(std_output, symbolize_keys: true)
+      @raw_metadata = MultiJson.load(std_output, symbolize_keys: true)
 
-      if metadata.key?(:error)
+      if raw_metadata.key?(:error)
 
         @duration = 0
 
       else
 
-        video_streams = metadata[:streams].select { |stream| stream.key?(:codec_type) and stream[:codec_type] === 'video' }
-        audio_streams = metadata[:streams].select { |stream| stream.key?(:codec_type) and stream[:codec_type] === 'audio' }
+        video_streams = raw_metadata[:streams].select { |stream| stream.key?(:codec_type) and stream[:codec_type] === 'video' }
+        audio_streams = raw_metadata[:streams].select { |stream| stream.key?(:codec_type) and stream[:codec_type] === 'audio' }
 
-        @container = metadata[:format][:format_name]
+        @container = raw_metadata[:format][:format_name]
 
-        @duration = metadata[:format][:duration].to_f
+        @duration = raw_metadata[:format][:duration].to_f
 
-        @time = metadata[:format][:start_time].to_f
+        @time = raw_metadata[:format][:start_time].to_f
 
-        @creation_time = if metadata[:format].key?(:tags) and metadata[:format][:tags].key?(:creation_time)
+        @creation_time = if raw_metadata[:format].key?(:tags) and raw_metadata[:format][:tags].key?(:creation_time)
                            begin
-                             Time.parse(metadata[:format][:tags][:creation_time])
+                             Time.parse(raw_metadata[:format][:tags][:creation_time])
                            rescue ArgumentError
                              nil
                            end
@@ -55,7 +55,7 @@ module FFMPEG
                            nil
                          end
 
-        @bitrate = metadata[:format][:bit_rate].to_i
+        @bitrate = raw_metadata[:format][:bit_rate].to_i
 
         # TODO: Handle multiple video codecs (is that possible?)
         video_stream = video_streams.first
@@ -100,7 +100,7 @@ module FFMPEG
       nil_or_unsupported = -> (stream) { stream.nil? || unsupported_stream_ids.include?(stream[:index]) }
 
       @invalid = true if nil_or_unsupported.(video_stream) && nil_or_unsupported.(audio_stream)
-      @invalid = true if metadata.key?(:error)
+      @invalid = true if raw_metadata.key?(:error)
       @invalid = true if std_error.include?("is not supported")
       @invalid = true if std_error.include?("could not find codec parameters")
     end
@@ -166,7 +166,8 @@ module FFMPEG
       Transcoder.new(self, output_file, options.merge(screenshot: true), transcoder_options).run &block
     end
 
-    protected
+    private
+
     def aspect_from_dar
       return nil unless dar
       w, h = dar.split(":")
